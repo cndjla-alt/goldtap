@@ -1,171 +1,210 @@
-// server.js
-import express from "express";
-import crypto from "crypto";
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#090b18">
+<title>GOLD TAP</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:radial-gradient(ellipse at top,#39234f,#11152b 55%,#080a15);color:white;font-family:Arial,sans-serif}
+.app{max-width:520px;margin:auto}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+.brand{font-size:24px;font-weight:1000;letter-spacing:3px;color:#ffd76a}
+.pill,.stat,.panel{background:#ffffff10;border:1px solid #ffffff20;border-radius:17px;padding:13px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.label{font-size:11px;color:#b9bfd3;text-transform:uppercase}
+.value{font-size:25px;font-weight:900;margin-top:5px}
+.gold{color:#ffd76a}
+.level{display:flex;justify-content:space-between;margin:15px 2px 6px;font-size:12px;color:#ddd}
+.track,.energy-track{height:9px;background:#ffffff20;border-radius:20px;overflow:hidden}
+.fill{height:100%;width:0;background:linear-gradient(90deg,#ff9f1c,#fff09a)}
+.arena{text-align:center;padding:22px 0}
+.coin{width:210px;height:210px;border-radius:50%;border:8px solid #fff0a0;background:radial-gradient(circle at 30% 25%,#fff9bf,#ffd65b 35%,#e99513 70%,#9b4c08);box-shadow:inset 0 0 0 7px #bd7411,0 0 45px #ffb52e88;display:grid;place-items:center;margin:auto;color:#8e4c08;font-size:95px;font-weight:bold;cursor:pointer;touch-action:manipulation}
+.coin:active{transform:scale(.94)}
+.caption{font-size:12px;color:#ffe9a7;font-weight:bold;letter-spacing:2px;margin:15px}
+.energy{display:flex;justify-content:space-between;font-size:12px;margin:12px 3px 6px;color:#ddd}
+.energy-fill{height:100%;width:100%;background:linear-gradient(90deg,#46e6be,#b4ffad)}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:15px 0}
+button{cursor:pointer}
+.tab{border:1px solid #ffffff20;background:#ffffff10;color:white;padding:12px 4px;border-radius:12px;font-weight:bold}
+.tab.active{background:linear-gradient(120deg,#ffcf58,#ff9f1c);color:#392006}
+.panel{margin-bottom:12px}
+.title{font-weight:900;margin-bottom:12px}
+.upgrade{display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid #ffffff18}
+.icon{width:43px;height:43px;border-radius:12px;background:linear-gradient(145deg,#ffe68c,#d98213);display:grid;place-items:center;font-size:22px}
+.info{flex:1}
+.name{font-weight:bold;font-size:14px}
+.desc{font-size:11px;color:#b9bfd3;margin-top:4px}
+.buy{border:0;border-radius:10px;padding:10px;background:linear-gradient(120deg,#ffe17b,#ffad27);font-weight:bold}
+.buy:disabled{opacity:.35}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.item{background:#ffffff10;border:1px solid #ffffff20;border-radius:12px;padding:14px}
+.item b{display:block;font-size:20px;margin:5px 0}
+.item span{font-size:11px;color:#b9bfd3}
+.bottom{display:flex;gap:7px;margin-top:12px}
+.small{flex:1;padding:11px;background:#ffffff10;color:white;border:1px solid #ffffff25;border-radius:11px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#29263c;border:1px solid #ffffff30;padding:12px 17px;border-radius:12px;opacity:0;transition:.2s;pointer-events:none}
+.toast.show{opacity:1}
+footer{text-align:center;color:#8189a5;font-size:10px;margin:18px}
+</style>
+</head>
+<body>
+<main class="app">
+<header><div class="brand">✦ GOLD TAP</div><div class="pill" id="rank">🥉 НОВИЧОК</div></header>
 
-const BOT_TOKEN  = process.env.BOT_TOKEN;          // токен от @BotFather
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET; // любая длинная случайная строка
-const ADMIN_KEY  = process.env.ADMIN_KEY;          // для ручного запуска наград
-const MAX_PTS_PER_SEC = 12;                        // потолок очков в секунду (античит)
-const SHOP = { boost_x2: { title: "Буст x2", stars: 50 } };
+<section class="stats">
+<div class="stat"><div class="label">Твои монеты</div><div class="value gold" id="coins">0</div></div>
+<div class="stat"><div class="label">Доход за тап</div><div class="value" id="perTap">+1</div></div>
+</section>
 
-const app = express();
-app.use(express.json());
-app.use((req, res, next) => {                      // CORS для Mini App
-  res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
+<div class="level"><span id="level">Уровень 1</span><span id="xpText">0 / 100 XP</span></div>
+<div class="track"><div class="fill" id="xpFill"></div></div>
 
-// ---------- Хранилище (замените на БД в продакшене) ----------
-const users = new Map();     // id -> { id, name, best, seasonBest: {year:score}, boosts }
-const sessions = new Map();  // sid -> { userId, start, used }
-const season = { year: new Date().getFullYear(), winners: null };
+<section class="arena">
+<button class="coin" id="tap">₿</button>
+<div class="caption">НАЖИМАЙ И ЗАРАБАТЫВАЙ</div>
+<div class="energy"><span>⚡ Энергия</span><span id="energyText">500 / 500</span></div>
+<div class="energy-track"><div class="energy-fill" id="energyFill"></div></div>
+</section>
 
-// ---------- Проверка подписи Telegram initData ----------
-function verifyInitData(initData) {
-  if (!initData) return null;
-  const params = new URLSearchParams(initData);
-  const hash = params.get("hash");
-  if (!hash) return null;
-  params.delete("hash");
+<nav class="tabs">
+<button class="tab active" data-tab="boost">🚀 Улучшения</button>
+<button class="tab" data-tab="tasks">🎯 Задания</button>
+<button class="tab" data-tab="profile">👑 Профиль</button>
+</nav>
 
-  const dataCheck = [...params.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`).join("\n");
+<section class="panel" id="boostPanel">
+<div class="title">Прокачай доход ✨</div>
+<div id="upgrades"></div>
+</section>
 
-  const secret = crypto.createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
-  const calc = crypto.createHmac("sha256", secret).update(dataCheck).digest("hex");
+<section class="panel" id="tasksPanel" hidden>
+<div class="title">🎯 Ежедневные задания</div>
+<div class="upgrade"><div class="icon">👆</div><div class="info"><div class="name">Нажми 50 раз</div><div class="desc" id="taskTaps">0 / 50</div></div><button class="buy" id="claimTaps">+100</button></div>
+<div class="upgrade"><div class="icon">🪙</div><div class="info"><div class="name">Накопи 1000 монет</div><div class="desc" id="taskCoins">0 / 1000</div></div><button class="buy" id="claimCoins">+250</button></div>
+<div class="upgrade"><div class="icon">🎁</div><div class="info"><div class="name">Ежедневный подарок</div><div class="desc">Раз в сутки</div></div><button class="buy" id="daily">Забрать</button></div>
+</section>
 
-  const a = Buffer.from(calc), b = Buffer.from(hash);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+<section class="panel" id="profilePanel" hidden>
+<div class="title">👑 Твой профиль</div>
+<div class="grid">
+<div class="item">🏆<b id="best">0</b><span>Всего заработано</span></div>
+<div class="item">👆<b id="tapCount">0</b><span>Всего тапов</span></div>
+<div class="item">⚡<b id="energyLevel">500</b><span>Макс. энергия</span></div>
+<div class="item">💎<b id="boostLevel">x1</b><span>Множитель</span></div>
+</div>
+<p style="color:#b9bfd3;font-size:12px;line-height:1.5">Прогресс сохраняется на этом устройстве. Онлайн-рейтинг и платежи подключим отдельно.</p>
+</section>
 
-  const authDate = Number(params.get("auth_date"));
-  if (Date.now() / 1000 - authDate > 86400) return null; // данные старше суток
+<div class="bottom">
+<button class="small" id="sound">🔊 Звук: выкл.</button>
+<button class="small" id="save">💾 Сохранить</button>
+<button class="small" id="reset">↻ Сброс</button>
+</div>
+<footer>GOLD TAP • Играй, прокачивайся, побеждай ✨</footer>
+</main>
+<div class="toast" id="toast"></div>
 
-  const user = JSON.parse(params.get("user") || "null");
-  if (!user) return null;
-  if (!users.has(user.id)) {
-    users.set(user.id, { id: user.id, name: user.first_name || "Игрок", best: 0, seasonBest: {}, boosts: 0 });
-  }
-  return users.get(user.id);
+<script>
+const $=id=>document.getElementById(id);
+const defaults={coins:0,total:0,taps:0,energy:500,maxEnergy:500,perTap:1,mult:1,level:1,xp:0,up:[0,0,0,0],claimed:{},lastDaily:"",sound:false};
+let s={...defaults,...JSON.parse(localStorage.getItem("goldTapSave")||"{}")};
+
+const upgrades=[
+{icon:"👆",name:"Сильный палец",desc:"+1 монета за тап",base:50,apply:()=>s.perTap+=1},
+{icon:"🤖",name:"Золотой бот",desc:"+5 монет за тап",base:250,apply:()=>s.perTap+=5},
+{icon:"⚡",name:"Энергобанк",desc:"+100 энергии",base:180,apply:()=>{s.maxEnergy+=100;s.energy+=100}},
+{icon:"💎",name:"Множитель x2",desc:"Удваивает доход",base:1200,apply:()=>s.mult*=2}
+];
+
+const fmt=n=>Math.floor(n).toLocaleString("ru-RU");
+function cost(i){return Math.floor(upgrades[i].base*Math.pow(1.65,s.up[i]))}
+function save(){localStorage.setItem("goldTapSave",JSON.stringify(s))}
+function toast(t){$("toast").textContent=t;$("toast").classList.add("show");setTimeout(()=>$("toast").classList.remove("show"),1800)}
+
+function render(){
+$("coins").textContent=fmt(s.coins);
+$("perTap").textContent="+"+fmt(s.perTap*s.mult);
+$("energyText").textContent=fmt(s.energy)+" / "+fmt(s.maxEnergy);
+$("energyFill").style.width=(s.energy/s.maxEnergy*100)+"%";
+$("level").textContent="Уровень "+s.level;
+$("xpText").textContent=fmt(s.xp)+" / "+(s.level*100)+" XP";
+$("xpFill").style.width=(s.xp/(s.level*100)*100)+"%";
+$("rank").textContent=s.level>=10?"👑 ЛЕГЕНДА":s.level>=5?"🥇 ЗОЛОТОЙ":s.level>=3?"🥈 ПРО":"🥉 НОВИЧОК";
+
+$("upgrades").innerHTML=upgrades.map((u,i)=>`
+<div class="upgrade">
+<div class="icon">${u.icon}</div>
+<div class="info"><div class="name">${u.name}</div>
+<div class="desc">${u.desc} · ур. ${s.up[i]}</div></div>
+<button class="buy" data-buy="${i}" ${s.coins<cost(i)?"disabled":""}>🪙 ${fmt(cost(i))}</button>
+</div>`).join("");
+
+document.querySelectorAll("[data-buy]").forEach(b=>b.onclick=()=>buy(+b.dataset.buy));
+$("best").textContent=fmt(s.total);
+$("tapCount").textContent=fmt(s.taps);
+$("energyLevel").textContent=fmt(s.maxEnergy);
+$("boostLevel").textContent="x"+s.mult;
+$("taskTaps").textContent=Math.min(s.taps,50)+" / 50";
+$("taskCoins").textContent=fmt(Math.min(s.total,1000))+" / 1000";
+$("claimTaps").disabled=!!s.claimed.taps||s.taps<50;
+$("claimTaps").textContent=s.claimed.taps?"Готово":"+100";
+$("claimCoins").disabled=!!s.claimed.coins||s.total<1000;
+$("claimCoins").textContent=s.claimed.coins?"Готово":"+250";
+let today=new Date().toDateString();
+$("daily").disabled=s.lastDaily===today;
+$("daily").textContent=s.lastDaily===today?"Получено":"+500";
+$("sound").textContent=s.sound?"🔊 Звук: вкл.":"🔊 Звук: выкл.";
 }
 
-// ---------- Античит: сессия игры ----------
-app.post("/api/session", (req, res) => {
-  const user = verifyInitData(req.body.initData);
-  if (!user) return res.status(401).json({ error: "bad auth" });
-  const sid = crypto.randomUUID();
-  sessions.set(sid, { userId: user.id, start: Date.now(), used: false });
-  res.json({ sid });
-});
-
-app.post("/api/score", (req, res) => {
-  const user = verifyInitData(req.body.initData);
-  const s = sessions.get(req.body.sid);
-  const score = Number(req.body.score);
-  if (!user || !s || s.used || s.userId !== user.id) return res.status(403).json({ error: "forbidden" });
-  if (!Number.isInteger(score) || score < 0) return res.status(400).json({ error: "bad score" });
-
-  const seconds = (Date.now() - s.start) / 1000;
-  if (score > (seconds + 2) * MAX_PTS_PER_SEC) {
-    sessions.delete(req.body.sid);
-    return res.status(422).json({ error: "score rejected" });
-  }
-  s.used = true;
-  sessions.delete(req.body.sid);
-
-  user.best = Math.max(user.best, score);
-  const y = season.year;
-  user.seasonBest[y] = Math.max(user.seasonBest[y] || 0, score);
-  res.json({ ok: true, best: user.best });
-});
-
-// ---------- Лидерборд ----------
-function seasonTop(year = season.year, n = 5) {
-  return [...users.values()]
-    .filter(u => u.seasonBest[year])
-    .map(u => ({ name: u.name, score: u.seasonBest[year] }))
-    .sort((a, b) => b.score - a.score).slice(0, n);
+function tap(){
+if(s.energy<=0){toast("Энергия закончилась ⚡");return}
+let gain=s.perTap*s.mult;
+s.coins+=gain;s.total+=gain;s.taps++;s.energy--;
+s.xp++;
+if(s.xp>=s.level*100){s.xp-=s.level*100;s.level++;toast("Новый уровень! 🎉")}
+render();save();
 }
-app.get("/api/leaderboard", (req, res) => res.json({ year: season.year, top: seasonTop() }));
 
-// ---------- Оплата Telegram Stars ----------
-const tgApi = (method, body) =>
-  fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  }).then(r => r.json());
-
-app.post("/api/invoice", async (req, res) => {
-  const user = verifyInitData(req.body.initData);
-  const item = SHOP[req.body.item];
-  if (!user || !item) return res.status(400).json({ error: "bad request" });
-
-  const payload = JSON.stringify({ uid: user.id, item: req.body.item, nonce: crypto.randomUUID() });
-  const r = await tgApi("createInvoiceLink", {
-    title: item.title,
-    description: "Усиление для следующей игры",
-    payload,
-    provider_token: "",          // для Stars оставляем пустым
-    currency: "XTR",             // валюта Telegram Stars
-    prices: [{ label: item.title, amount: item.stars }],
-  });
-  if (!r.ok) return res.status(502).json({ error: "invoice failed" });
-  res.json({ url: r.result });
-});
-
-// Webhook: сюда Telegram присылает события
-app.post(`/webhook/${WEBHOOK_SECRET}`, async (req, res) => {
-  const u = req.body;
-
-  if (u.pre_checkout_query) {                       // подтверждаем платёж (до 10 сек)
-    await tgApi("answerPreCheckoutQuery", { pre_checkout_query_id: u.pre_checkout_query.id, ok: true });
-  }
-
-  const sp = u.message?.successful_payment;
-  if (sp) {
-    const data = JSON.parse(sp.invoice_payload);
-    const user = users.get(data.uid);
-    // Идемпотентность: один платёж засчитываем один раз
-    if (user && !paidCharges.has(sp.telegram_payment_charge_id)) {
-      paidCharges.add(sp.telegram_payment_charge_id);
-      if (data.item === "boost_x2") user.boosts += 1;
-      await tgApi("sendMessage", { chat_id: u.message.chat.id, text: "✅ Оплата прошла, буст активирован!" });
-    }
-  }
-  res.sendStatus(200);
-});
-const paidCharges = new Set();
-
-// ---------- Сезонные награды: ТОП-5 раз в год ----------
-function awardSeason(year) {
-  if (season.winners) return season.winners;
-  const top = seasonTop(year, 5);
-  season.winners = top.map((w, i) => ({ place: i + 1, ...w, reward: REWARDS[i] }));
-  // Здесь фиксируем победителей в БД и запускаем выплату вручную или через ваш процесс
-  return season.winners;
+function buy(i){
+let c=cost(i);
+if(s.coins<c)return;
+s.coins-=c;s.up[i]++;upgrades[i].apply();
+toast("Улучшение куплено! ✨");render();save();
 }
-const REWARDS = ["Приз 1 место", "Приз 2 место", "Приз 3 место", "Приз 4 место", "Приз 5 место"];
 
-// Ручной запуск (защищён ключом)
-app.post("/admin/award", (req, res) => {
-  if (req.headers["x-admin-key"] !== ADMIN_KEY) return res.sendStatus(403);
-  res.json({ year: season.year, winners: awardSeason(season.year) });
+$("tap").addEventListener("pointerdown",tap);
+
+document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{
+document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x===b));
+["boost","tasks","profile"].forEach(t=>$(t+"Panel").hidden=t!==b.dataset.tab);
 });
 
-// Автопроверка 1 января
-setInterval(() => {
-  const now = new Date();
-  if (now.getMonth() === 0 && now.getDate() === 1 && now.getFullYear() > season.year) {
-    awardSeason(season.year);
-    season.year = now.getFullYear(); season.winners = null;
-  }
-}, 60 * 60 * 1000);
+$("claimTaps").onclick=()=>{
+s.claimed.taps=true;s.coins+=100;toast("Награда +100");render();save();
+};
+$("claimCoins").onclick=()=>{
+s.claimed.coins=true;s.coins+=250;toast("Награда +250");render();save();
+};
+$("daily").onclick=()=>{
+let d=new Date().toDateString();
+if(s.lastDaily===d)return;
+s.lastDaily=d;s.coins+=500;toast("Подарок +500 🎁");render();save();
+};
+$("sound").onclick=()=>{s.sound=!s.sound;render();save()};
+$("save").onclick=()=>{save();toast("Сохранено 💾")};
+$("reset").onclick=()=>{
+if(confirm("Сбросить весь прогресс?")){
+localStorage.removeItem("goldTapSave");s={...defaults};render();toast("Начинаем заново!");
+}
+};
 
-// Чистка старых сессий
-setInterval(() => {
-  const limit = Date.now() - 30 * 60 * 1000;
-  for (const [sid, s] of sessions) if (s.start < limit) sessions.delete(sid);
-}, 10 * 60 * 1000);
+setInterval(()=>{
+if(s.energy<s.maxEnergy){s.energy=Math.min(s.maxEnergy,s.energy+1);render();save()}
+},1800);
 
-app.listen(process.env.PORT || 3000, () => console.log("Server started"));
+render();
+</script>
+</body>
+</html>
