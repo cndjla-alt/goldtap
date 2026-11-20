@@ -1,0 +1,171 @@
+// server.js
+import express from "express";
+import crypto from "crypto";
+
+const BOT_TOKEN  = process.env.BOT_TOKEN;          // токен от @BotFather
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET; // любая длинная случайная строка
+const ADMIN_KEY  = process.env.ADMIN_KEY;          // для ручного запуска наград
+const MAX_PTS_PER_SEC = 12;                        // потолок очков в секунду (античит)
+const SHOP = { boost_x2: { title: "Буст x2", stars: 50 } };
+
+const app = express();
+app.use(express.json());
+app.use((req, res, next) => {                      // CORS для Mini App
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+// ---------- Хранилище (замените на БД в продакшене) ----------
+const users = new Map();     // id -> { id, name, best, seasonBest: {year:score}, boosts }
+const sessions = new Map();  // sid -> { userId, start, used }
+const season = { year: new Date().getFullYear(), winners: null };
+
+// ---------- Проверка подписи Telegram initData ----------
+function verifyInitData(initData) {
+  if (!initData) return null;
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return null;
+  params.delete("hash");
+
+  const dataCheck = [...params.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`).join("\n");
+
+  const secret = crypto.createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
+  const calc = crypto.createHmac("sha256", secret).update(dataCheck).digest("hex");
+
+  const a = Buffer.from(calc), b = Buffer.from(hash);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+
+  const authDate = Number(params.get("auth_date"));
+  if (Date.now() / 1000 - authDate > 86400) return null; // данные старше суток
+
+  const user = JSON.parse(params.get("user") || "null");
+  if (!user) return null;
+  if (!users.has(user.id)) {
+    users.set(user.id, { id: user.id, name: user.first_name || "Игрок", best: 0, seasonBest: {}, boosts: 0 });
+  }
+  return users.get(user.id);
+}
+
+// ---------- Античит: сессия игры ----------
+app.post("/api/session", (req, res) => {
+  const user = verifyInitData(req.body.initData);
+  if (!user) return res.status(401).json({ error: "bad auth" });
+  const sid = crypto.randomUUID();
+  sessions.set(sid, { userId: user.id, start: Date.now(), used: false });
+  res.json({ sid });
+});
+
+app.post("/api/score", (req, res) => {
+  const user = verifyInitData(req.body.initData);
+  const s = sessions.get(req.body.sid);
+  const score = Number(req.body.score);
+  if (!user || !s || s.used || s.userId !== user.id) return res.status(403).json({ error: "forbidden" });
+  if (!Number.isInteger(score) || score < 0) return res.status(400).json({ error: "bad score" });
+
+  const seconds = (Date.now() - s.start) / 1000;
+  if (score > (seconds + 2) * MAX_PTS_PER_SEC) {
+    sessions.delete(req.body.sid);
+    return res.status(422).json({ error: "score rejected" });
+  }
+  s.used = true;
+  sessions.delete(req.body.sid);
+
+  user.best = Math.max(user.best, score);
+  const y = season.year;
+  user.seasonBest[y] = Math.max(user.seasonBest[y] || 0, score);
+  res.json({ ok: true, best: user.best });
+});
+
+// ---------- Лидерборд ----------
+function seasonTop(year = season.year, n = 5) {
+  return [...users.values()]
+    .filter(u => u.seasonBest[year])
+    .map(u => ({ name: u.name, score: u.seasonBest[year] }))
+    .sort((a, b) => b.score - a.score).slice(0, n);
+}
+app.get("/api/leaderboard", (req, res) => res.json({ year: season.year, top: seasonTop() }));
+
+// ---------- Оплата Telegram Stars ----------
+const tgApi = (method, body) =>
+  fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }).then(r => r.json());
+
+app.post("/api/invoice", async (req, res) => {
+  const user = verifyInitData(req.body.initData);
+  const item = SHOP[req.body.item];
+  if (!user || !item) return res.status(400).json({ error: "bad request" });
+
+  const payload = JSON.stringify({ uid: user.id, item: req.body.item, nonce: crypto.randomUUID() });
+  const r = await tgApi("createInvoiceLink", {
+    title: item.title,
+    description: "Усиление для следующей игры",
+    payload,
+    provider_token: "",          // для Stars оставляем пустым
+    currency: "XTR",             // валюта Telegram Stars
+    prices: [{ label: item.title, amount: item.stars }],
+  });
+  if (!r.ok) return res.status(502).json({ error: "invoice failed" });
+  res.json({ url: r.result });
+});
+
+// Webhook: сюда Telegram присылает события
+app.post(`/webhook/${WEBHOOK_SECRET}`, async (req, res) => {
+  const u = req.body;
+
+  if (u.pre_checkout_query) {                       // подтверждаем платёж (до 10 сек)
+    await tgApi("answerPreCheckoutQuery", { pre_checkout_query_id: u.pre_checkout_query.id, ok: true });
+  }
+
+  const sp = u.message?.successful_payment;
+  if (sp) {
+    const data = JSON.parse(sp.invoice_payload);
+    const user = users.get(data.uid);
+    // Идемпотентность: один платёж засчитываем один раз
+    if (user && !paidCharges.has(sp.telegram_payment_charge_id)) {
+      paidCharges.add(sp.telegram_payment_charge_id);
+      if (data.item === "boost_x2") user.boosts += 1;
+      await tgApi("sendMessage", { chat_id: u.message.chat.id, text: "✅ Оплата прошла, буст активирован!" });
+    }
+  }
+  res.sendStatus(200);
+});
+const paidCharges = new Set();
+
+// ---------- Сезонные награды: ТОП-5 раз в год ----------
+function awardSeason(year) {
+  if (season.winners) return season.winners;
+  const top = seasonTop(year, 5);
+  season.winners = top.map((w, i) => ({ place: i + 1, ...w, reward: REWARDS[i] }));
+  // Здесь фиксируем победителей в БД и запускаем выплату вручную или через ваш процесс
+  return season.winners;
+}
+const REWARDS = ["Приз 1 место", "Приз 2 место", "Приз 3 место", "Приз 4 место", "Приз 5 место"];
+
+// Ручной запуск (защищён ключом)
+app.post("/admin/award", (req, res) => {
+  if (req.headers["x-admin-key"] !== ADMIN_KEY) return res.sendStatus(403);
+  res.json({ year: season.year, winners: awardSeason(season.year) });
+});
+
+// Автопроверка 1 января
+setInterval(() => {
+  const now = new Date();
+  if (now.getMonth() === 0 && now.getDate() === 1 && now.getFullYear() > season.year) {
+    awardSeason(season.year);
+    season.year = now.getFullYear(); season.winners = null;
+  }
+}, 60 * 60 * 1000);
+
+// Чистка старых сессий
+setInterval(() => {
+  const limit = Date.now() - 30 * 60 * 1000;
+  for (const [sid, s] of sessions) if (s.start < limit) sessions.delete(sid);
+}, 10 * 60 * 1000);
+
+app.listen(process.env.PORT || 3000, () => console.log("Server started"));
